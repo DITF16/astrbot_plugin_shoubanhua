@@ -64,12 +64,15 @@ class FigurineProPlugin(Star):
         headers = {"Content-Type": "application/json"}
         url = ""
 
+        # ---------------- 1. 构造请求 Payload ----------------
+
         if api_mode == "gemini_official":
+            # Gemini 官方格式构造
             base_url = self.conf.get("gemini_api_url", "https://generativelanguage.googleapis.com")
             keys = self.conf.get("gemini_api_keys", [])
             if not keys: return "❌ 未配置 Gemini API Key"
 
-            key = keys[0]
+            key = keys[0]  # 简单轮询可在此处扩展
             url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent?key={key}"
 
             parts = [{"text": f"Generate a high quality image based on this description: {prompt}"}]
@@ -83,6 +86,7 @@ class FigurineProPlugin(Star):
             payload = {"contents": [{"parts": parts}]}
 
         else:
+            # Generic / OpenAI 格式构造
             base_url = self.conf.get("generic_api_url", "https://api.bltcy.ai/v1/chat/completions")
             keys = self.conf.get("generic_api_keys", [])
             if not keys: return "❌ 未配置 Generic API Key"
@@ -92,7 +96,8 @@ class FigurineProPlugin(Star):
             headers["Authorization"] = f"Bearer {key}"
 
             messages = [
-                {"role": "system", "content": "You are an expert AI artist. Output only the image URL. Do not talk."}]
+                {"role": "system", "content": "You are an expert AI artist. Output only the image URL. Do not talk."}
+            ]
 
             user_content = [{"type": "text", "text": prompt}]
             for img in image_bytes_list:
@@ -110,6 +115,8 @@ class FigurineProPlugin(Star):
                 "max_tokens": 4000
             }
 
+        # ---------------- 2. 发送请求与解析响应 ----------------
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers, proxy=self.iwf.proxy) as resp:
@@ -120,45 +127,58 @@ class FigurineProPlugin(Star):
                     data = await resp.json()
                     img_url = None
 
-                    # 优先检查 DALL-E 标准格式 (data列表)，Banana模型常用此格式
-                    if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+                    # --- 解析逻辑开始 ---
+
+                    # 1. 检查 Choices 列表 (Banana/Chat 格式)
+                    if "choices" in data and len(data["choices"]) > 0:
+                        message = data["choices"][0].get("message", {})
+
+                        # [A] 优先检查 images 字段
+                        # 结构: message -> images list -> item -> image_url dict -> url
+                        if "images" in message and isinstance(message["images"], list) and len(message["images"]) > 0:
+                            first_img = message["images"][0]
+                            # 情况 A1: 嵌套在 image_url 里
+                            if isinstance(first_img, dict) and "image_url" in first_img:
+                                if isinstance(first_img["image_url"], dict):
+                                    img_url = first_img["image_url"].get("url")
+                                elif isinstance(first_img["image_url"], str):
+                                    img_url = first_img["image_url"]
+                            # 情况 A2: 直接在对象里
+                            elif isinstance(first_img, dict) and "url" in first_img:
+                                img_url = first_img["url"]
+                            # 情况 A3: 纯字符串 URL
+                            elif isinstance(first_img, str):
+                                img_url = first_img
+
+                        # [B] 如果 images 里没找到，再看 content (Markdown/Text)
+                        if not img_url:
+                            content = message.get("content")
+                            if content:  # 只有 content 不为空才正则
+                                # 匹配 Markdown 图片
+                                match = re.search(r'\!\[.*?\]\((.*?)\)', content)
+                                if match:
+                                    img_url = match.group(1)
+                                else:
+                                    # 匹配纯 URL
+                                    match = re.search(r'https?://[^\s)]+', content)
+                                    if match: img_url = match.group(0)
+
+                        # [C] 检查非标准的 image_url 字段
+                        if not img_url and "image_url" in message:
+                            if isinstance(message["image_url"], dict):
+                                img_url = message["image_url"].get("url")
+                            elif isinstance(message["image_url"], str):
+                                img_url = message["image_url"]
+
+                    # 2. 检查 DALL-E 标准格式 (data 列表)
+                    elif "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                         item = data["data"][0]
                         if "url" in item:
                             img_url = item["url"]
                         elif "b64_json" in item:
                             img_url = f"data:image/png;base64,{item['b64_json']}"
 
-                    # 检查 ChatCompletion 格式
-                    elif "choices" in data and len(data["choices"]) > 0:
-                        message = data["choices"][0].get("message", {})
-                        content = message.get("content")  # 这里可能获取到 None
-
-                        # 只有当 content 确实存在且不是 None 时才进行正则匹配
-                        if content:
-                            # 匹配 Markdown 图片 ![...](url)
-                            match = re.search(r'\!\[.*?\]\((.*?)\)', content)
-                            if match:
-                                img_url = match.group(1)
-                            else:
-                                # 匹配纯 URL
-                                match = re.search(r'https?://[^\s)]+', content)
-                                if match: img_url = match.group(0)
-
-                        # 如果 content 没找到，尝试找非标准的 image_url 字段
-                        if not img_url:
-                            # 检查 message 中的 image_url (部分模型变体)
-                            if "image_url" in message:
-                                if isinstance(message["image_url"], dict):
-                                    img_url = message["image_url"].get("url")
-                                elif isinstance(message["image_url"], str):
-                                    img_url = message["image_url"]
-                            # 检查 images 列表 (部分模型变体)
-                            elif "images" in message and isinstance(message["images"], list) and len(
-                                    message["images"]) > 0:
-                                if isinstance(message["images"][0], str):
-                                    img_url = message["images"][0]
-
-                    # 检查 Gemini 格式
+                    # 3. 检查 Gemini 格式
                     elif "candidates" in data and len(data["candidates"]) > 0:
                         try:
                             parts = data["candidates"][0]["content"]["parts"]
@@ -174,13 +194,29 @@ class FigurineProPlugin(Star):
                         except:
                             pass
 
-                    if not img_url:
-                        error_msg = f"无法提取图片链接，API响应: {str(data)[:200]}..."
-                        if "choices" in data and data["choices"][0]["message"].get("content") is None:
-                            error_msg = "API返回了空内容(Content is None)，且未在data字段找到图片，生成失败。"
-                        return error_msg
+                    # --- 解析逻辑结束 ---
 
-                    return await self.iwf.download_image(img_url) or "❌ 图片下载失败 (连接超时或被拦截)"
+                    if not img_url:
+                        # 构造详细的错误信息
+                        error_detail = str(data)[:200]
+                        if "choices" in data and data["choices"][0]["message"].get("content") is None:
+                            return f"API返回空内容(Content is None)，且未找到图片数据。原始响应片段: {error_detail}"
+                        return f"无法提取图片链接。原始响应片段: {error_detail}"
+
+                    # ---------------- 3. 处理图片数据 (下载或解码) ----------------
+
+                    # 情况 A: Base64 数据
+                    if img_url.startswith("data:"):
+                        try:
+                            # 格式如 data:image/jpeg;base64,/9j/4AAQSk...
+                            # 分割出逗号后面的部分
+                            base64_data = img_url.split(",", 1)[1]
+                            return base64.b64decode(base64_data)
+                        except Exception as e:
+                            return f"Base64解码失败: {e}"
+
+                    # 情况 B: HTTP 链接 -> 需要下载
+                    return await self.iwf.download_image(img_url) or "❌ 图片下载失败 (连接超时)"
 
         except Exception as e:
             logger.error(f"API Call Failed: {e}")
