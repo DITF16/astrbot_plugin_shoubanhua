@@ -203,11 +203,11 @@ class FigurineProPlugin(Star):
             file_path = self.preset_images_dir / filename
             file_path.write_bytes(result)
 
-
+            # 更新映射
             self.preset_images_map[cmd] = str(file_path)
             self._save_image_map()
 
-
+            # 构建回复
             info_text = f"✅ {cmd} 完成"
             if not skip_cost and self.conf.get("enable_user_limit"):
                 remain = self.economy.get_user_count(sender_id)
@@ -218,8 +218,19 @@ class FigurineProPlugin(Star):
                 Plain(info_text)
             ])
         else:
-            # 失败：返回错误信息 (不退还次数? 视需求而定，这里暂时不退)
-            yield event.plain_result(f"❌ 生成失败: {result}")
+            if not skip_cost:
+                # 判断刚才扣的是用户还是群组
+                if self.conf.get("enable_user_limit"):
+                    # 退还用户
+                    await self.economy.admin_add_points(sender_id, 1, is_group=False)
+                    logger.info(f"[手办化] 生成失败，已自动退还用户 {sender_id} 1次额度")
+
+                elif self.conf.get("enable_group_limit") and event.get_group_id():
+                    # 退还群组
+                    await self.economy.admin_add_points(event.get_group_id(), 1, is_group=True)
+                    logger.info(f"[手办化] 生成失败，已自动退还群组 {event.get_group_id()} 1次额度")
+
+            yield event.plain_result(f"❌ 生成失败: {result}\n(检测到生成失败，已自动返还扣除的次数)")
 
 
 
