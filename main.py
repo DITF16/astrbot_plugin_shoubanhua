@@ -124,28 +124,37 @@ class FigurineProPlugin(Star):
 
                     img_url = None
 
-                    # 尝试解析 Generic/OpenAI 格式
-                    if "choices" in data:
-                        content = data["choices"][0]["message"]["content"]
-                        # 找 Markdown 图片: ![x](url)
-                        match = re.search(r'\!\[.*?\]\((.*?)\)', content)
-                        if match:
-                            img_url = match.group(1)
-                        else:
-                            match = re.search(r'https?://[^\s)]+', content)
-                            if match: img_url = match.group(0)
+                    if "choices" in data and len(data["choices"]) > 0:
+                        message = data["choices"][0].get("message", {})
+                        content = message.get("content", "")
 
-                    # 尝试解析 Gemini 格式 (如果是 URL 模式)
+                        if content:
+                            match = re.search(r'\!\[.*?\]\((.*?)\)', content)
+                            if match:
+                                img_url = match.group(1)
+                            else:
+                                match = re.search(r'https?://[^\s)]+', content)
+                                if match: img_url = match.group(0)
+
+                        if not img_url and "image_url" in message:
+                            img_url = message["image_url"].get("url")
+
                     elif "candidates" in data:
                         try:
-                            txt = data["candidates"][0]["content"]["parts"][0]["text"]
-                            match = re.search(r'https?://[^\s)]+', txt)
-                            if match: img_url = match.group(0)
+                            parts = data["candidates"][0]["content"]["parts"]
+                            if parts and "text" in parts[0]:
+                                txt = parts[0]["text"]
+                                if txt:
+                                    match = re.search(r'https?://[^\s)]+', txt)
+                                    if match: img_url = match.group(0)
                         except:
                             pass
 
                     if not img_url:
-                        return f"无法提取图片链接，API响应: {str(data)[:200]}..."
+                        error_msg = f"无法提取图片链接，API响应: {str(data)[:200]}..."
+                        if "choices" in data and data["choices"][0]["message"].get("content") is None:
+                            error_msg = "API返回了空内容(Content is None)，可能是模型生成失败或被上游拦截。"
+                        return error_msg
 
                     return await self.iwf.download_image(img_url) or "❌ 图片下载失败 (连接超时或被拦截)"
 
