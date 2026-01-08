@@ -12,7 +12,6 @@ from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import At, Image, Plain, Node, Nodes
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
-
 from .preset_manager import PresetManager
 from .utils import ImageWorkflow, TableGenerator
 from .economy import EconomyManager
@@ -55,8 +54,6 @@ class FigurineProPlugin(Star):
         sender = event.get_sender_id()
         admins = self.conf.get("admins_id", [])
         return str(sender) in admins
-
-
 
     async def _call_api(self, image_bytes_list: List[bytes], prompt: str) -> bytes | str:
         """调用 LLM API 生成图片"""
@@ -121,39 +118,66 @@ class FigurineProPlugin(Star):
                         return f"API Error {resp.status}: {text[:200]}"
 
                     data = await resp.json()
-
                     img_url = None
 
-                    if "choices" in data and len(data["choices"]) > 0:
-                        message = data["choices"][0].get("message", {})
-                        content = message.get("content", "")
+                    # 优先检查 DALL-E 标准格式 (data列表)，Banana模型常用此格式
+                    if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+                        item = data["data"][0]
+                        if "url" in item:
+                            img_url = item["url"]
+                        elif "b64_json" in item:
+                            img_url = f"data:image/png;base64,{item['b64_json']}"
 
+                    # 检查 ChatCompletion 格式
+                    elif "choices" in data and len(data["choices"]) > 0:
+                        message = data["choices"][0].get("message", {})
+                        content = message.get("content")  # 这里可能获取到 None
+
+                        # 只有当 content 确实存在且不是 None 时才进行正则匹配
                         if content:
+                            # 匹配 Markdown 图片 ![...](url)
                             match = re.search(r'\!\[.*?\]\((.*?)\)', content)
                             if match:
                                 img_url = match.group(1)
                             else:
+                                # 匹配纯 URL
                                 match = re.search(r'https?://[^\s)]+', content)
                                 if match: img_url = match.group(0)
 
-                        if not img_url and "image_url" in message:
-                            img_url = message["image_url"].get("url")
+                        # 如果 content 没找到，尝试找非标准的 image_url 字段
+                        if not img_url:
+                            # 检查 message 中的 image_url (部分模型变体)
+                            if "image_url" in message:
+                                if isinstance(message["image_url"], dict):
+                                    img_url = message["image_url"].get("url")
+                                elif isinstance(message["image_url"], str):
+                                    img_url = message["image_url"]
+                            # 检查 images 列表 (部分模型变体)
+                            elif "images" in message and isinstance(message["images"], list) and len(
+                                    message["images"]) > 0:
+                                if isinstance(message["images"][0], str):
+                                    img_url = message["images"][0]
 
-                    elif "candidates" in data:
+                    # 检查 Gemini 格式
+                    elif "candidates" in data and len(data["candidates"]) > 0:
                         try:
                             parts = data["candidates"][0]["content"]["parts"]
-                            if parts and "text" in parts[0]:
-                                txt = parts[0]["text"]
-                                if txt:
-                                    match = re.search(r'https?://[^\s)]+', txt)
-                                    if match: img_url = match.group(0)
+                            for p in parts:
+                                if "inlineData" in p:
+                                    img_url = f"data:{p['inlineData']['mimeType']};base64,{p['inlineData']['data']}"
+                                    break
+                                if "text" in p and p["text"]:
+                                    match = re.search(r'https?://[^\s)]+', p["text"])
+                                    if match:
+                                        img_url = match.group(0)
+                                        break
                         except:
                             pass
 
                     if not img_url:
                         error_msg = f"无法提取图片链接，API响应: {str(data)[:200]}..."
                         if "choices" in data and data["choices"][0]["message"].get("content") is None:
-                            error_msg = "API返回了空内容(Content is None)，可能是模型生成失败或被上游拦截。"
+                            error_msg = "API返回了空内容(Content is None)，且未在data字段找到图片，生成失败。"
                         return error_msg
 
                     return await self.iwf.download_image(img_url) or "❌ 图片下载失败 (连接超时或被拦截)"
@@ -161,8 +185,6 @@ class FigurineProPlugin(Star):
         except Exception as e:
             logger.error(f"API Call Failed: {e}")
             return f"系统错误: {e}"
-
-
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
     async def on_message(self, event: AstrMessageEvent):
@@ -202,6 +224,12 @@ class FigurineProPlugin(Star):
 
         # 如果不是纯文生图模式(text_only)，且没图，报错
         if not images and "text_only" not in prompt_template:
+            # 失败返还次数 (因为没开始生成)
+            if not skip_cost:
+                if self.conf.get("enable_user_limit"):
+                    await self.economy.admin_add_points(sender_id, 1, is_group=False)
+                elif self.conf.get("enable_group_limit") and event.get_group_id():
+                    await self.economy.admin_add_points(event.get_group_id(), 1, is_group=True)
             yield event.plain_result("⚠️ 请发送一张图片，或引用图片后输入命令。")
             return
 
@@ -241,8 +269,6 @@ class FigurineProPlugin(Star):
 
             yield event.plain_result(f"❌ 生成失败: {result}\n(检测到生成失败，已自动返还扣除的次数)")
 
-
-
     @filter.command("手办化帮助", aliases={"lmhelp", "手办化菜单"})
     async def cmd_help(self, event: AstrMessageEvent):
         """展示插件帮助菜单"""
@@ -265,7 +291,6 @@ class FigurineProPlugin(Star):
             "• #手办化帮助 : 显示此菜单"
         )
 
-
         if self.is_admin(event):
             help_text += (
                 "\n\n**【管理员指令】**\n"
@@ -275,7 +300,6 @@ class FigurineProPlugin(Star):
                 "• #手办化增加用户次数 <QQ> <数量>"
             )
 
-        # 构建节点消息（合并转发），如果平台不支持会自动降级为文本
         try:
             bot_id = "Robot"
             if hasattr(event, "robot") and event.robot: bot_id = str(event.robot.id)
@@ -288,7 +312,6 @@ class FigurineProPlugin(Star):
             yield event.chain_result([Nodes(nodes=[node])])
         except:
             yield event.plain_result(help_text)
-
 
     @filter.command("手办化签到")
     async def cmd_checkin(self, event: AstrMessageEvent):
@@ -307,7 +330,6 @@ class FigurineProPlugin(Star):
     async def cmd_add_points(self, event: AstrMessageEvent):
         if not self.is_admin(event): return
 
-        # 尝试智能解析：#指令 QQ 数量 或 #指令 @人 数量
         parts = event.message_str.split()
         target = None
         count = None
@@ -332,7 +354,6 @@ class FigurineProPlugin(Star):
             yield event.plain_result(msg)
         else:
             yield event.plain_result("格式: #手办化增加用户次数 <QQ> <数量> 或 @用户 <数量>")
-
 
     @filter.command("lm列表")
     async def lm_list(self, event: AstrMessageEvent):
