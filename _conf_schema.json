@@ -1,0 +1,93 @@
+      {
+  "api_mode": {
+    "description": "API 协议模式",
+    "type": "string",
+    "hint": "Generic使用OpenAI通用格式(如DeepSeek, SiliconFlow, Banana); Gemini使用谷歌官方格式。",
+    "default": "generic",
+    "options": ["generic", "gemini_official"]
+  },
+  "generic_api_url": {
+    "description": "【Generic】API地址",
+    "type": "string",
+    "hint": "完整URL，例如 https://api.siliconflow.cn/v1/chat/completions",
+    "default": "https://api.bltcy.ai/v1/chat/completions"
+  },
+  "generic_api_keys": {
+    "description": "【Generic】API Key",
+    "type": "list",
+    "hint": "API Key 池，系统会轮询使用",
+    "items": { "type": "string" },
+    "default": []
+  },
+  "gemini_api_url": {
+    "description": "【Gemini】API Base URL",
+    "type": "string",
+    "default": "https://generativelanguage.googleapis.com"
+  },
+  "gemini_api_keys": {
+    "description": "【Gemini】API Key",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": []
+  },
+  "model": {
+    "description": "默认模型名称",
+    "type": "string",
+    "hint": "例如 nano-banana, gemini-1.5-pro",
+    "default": "nano-banana"
+  },
+  "timeout": {
+    "description": "请求超时时间(秒)",
+    "type": "int",
+    "default": 120
+  },
+  "use_proxy": {
+    "description": "启用代理",
+    "type": "bool",
+    "default": false
+  },
+  "proxy_url": {
+    "description": "代理地址",
+    "type": "string",
+    "hint": "例如 http://127.0.0.1:7890",
+    "default": ""
+  },
+  "enable_user_limit": {
+    "description": "【经济】启用用户次数限制",
+    "type": "bool",
+    "default": true
+  },
+  "enable_group_limit": {
+    "description": "【经济】启用群组次数限制",
+    "type": "bool",
+    "default": false
+  },
+  "enable_checkin": {
+    "description": "【经济】启用签到功能",
+    "type": "bool",
+    "default": true
+  },
+  "checkin_fixed_reward": {
+    "description": "【经济】签到奖励次数",
+    "type": "int",
+    "default": 5
+  },
+  "preset_table_quality": {
+    "description": "预览图质量",
+    "type": "string",
+    "options": ["标准", "高清", "超清"],
+    "default": "高清"
+  },
+  "admins_id": {
+    "description": "管理员QQ号列表",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": []
+  },
+  "user_blacklist": {
+    "description": "用户黑名单",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": []
+  }
+}
